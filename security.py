@@ -35,7 +35,31 @@ PRIVILEGED_SINK = {
 # Heuristic: nothing in the format marks a checkpoint, so gates are named.
 VERIFIER_HINT = re.compile(r"verif|review|check|judge|gate|audit|adjudic", re.I)
 
-SEV_ORDER = {"critical": 3, "high": 2, "medium": 1, "info": 0}
+# Evidence-strength ladder, not a risk score. A reviewer needs to know whether
+# they are looking at an architecture smell or a live event, so every finding
+# names its tier. Deliberately NOT called "critical/high/medium": "critical"
+# sits one button away from "critical path" in this UI and would be misread.
+TIER_RANK = {"OBSERVED": 2, "REACHABLE": 1, "DECLARED": 0}
+TIER_HELP = {
+    "OBSERVED":  "we saw the actual call and matched its argument to upstream text",
+    "REACHABLE": "data really crossed the edge and could have influenced this",
+    "DECLARED":  "a claim about capability, not an observation of misuse",
+}
+
+# Two hard ceilings make some claims unsupportable at every tier: extended
+# thinking ships encrypted, so intent is structurally invisible; and this is a
+# read-only tailer, so nothing was ever intercepted. Enforce in code, not prose.
+BANNED_CLAIMS = re.compile(
+    r"\b(blocked|prevented|stopped|mitigated|malicious|attack(?:er)?|intent(?:ional)?|"
+    r"deliberate|exploit(?:ed)?|compromis(?:ed|e)|breach|safe|secure|proves?)\b", re.I)
+
+
+def _check_claims(f):
+    """Fail loudly rather than ship an overstated finding."""
+    for field in ("title", "evidence", "why"):
+        m = BANNED_CLAIMS.search(f.get(field) or "")
+        assert not m, f"unsupportable claim {m.group(0)!r} in {f['id']}.{field}"
+    return f
 
 
 def classify_tools(names):
@@ -127,91 +151,122 @@ def analyze(graph, tools_used, tool_args, own_prompt):
         elif p["ingress"] or p["tainted"]:
             p["exposure"] = "untrusted"
 
-    # ── finding 1: untrusted data actually reached a privileged sink ──────
+    # ── finding 1: untrusted content crossed an EDGE into a privileged tool ──
+    # A node that both fetches and executes is ordinary (a research agent with
+    # web + bash). That is posture, shown as icons, not an alert. The alert is
+    # for untrusted data travelling ACROSS a node boundary into a sink.
     for nid, p in posture.items():
-        if not p["sink"]:
-            continue
-        srcs = p["taintFrom"] or ([nid] if p["ingress"] else [])
-        if not srcs:
+        srcs = [s for s in p["taintFrom"] if s != nid]
+        if not (p["sink"] and srcs):
             continue
         gated = _path_has_verifier(srcs, nid, flow, nodes)
-        sev = "high" if not gated else "medium"
+        ing = sorted({t for s in srcs for t in posture[s]["ingress"]})
         findings.append({
             "id": f"taint::{nid}",
-            "node": nid, "severity": sev, "confidence": "possible",
-            "title": "Untrusted content reached a privileged tool",
-            "evidence": (f"{', '.join(srcs)} used {', '.join(sorted(set(sum([posture[s]['ingress'] for s in srcs if s in posture], []))))}"
-                         f" and its output was injected into {nid}, which called {', '.join(p['sink'])}."
-                         + ("" if gated else " No verifier node lies on that path.")),
-            "why": "Content of unknown provenance can influence a world-changing action.",
-            "path": _one_path(srcs[0], nid, flow) if srcs else [nid],
+            "node": nid, "tier": "REACHABLE",
+            "confidence": "possible", "gated": gated,
+            "title": "Content of unknown provenance reached a privileged tool",
+            "evidence": (f"{', '.join(srcs)} pulled content via {', '.join(ing)}; that output was "
+                         f"injected into {nid}, which called {', '.join(p['sink'])}."
+                         + (" A verifier lies on the path." if gated else " No verifier lies on that path.")),
+            "why": "Content of unknown provenance can shape a world-changing action.",
+            "path": _one_path(srcs[0], nid, flow),
         })
 
-    # ── finding 2: a tool argument traceable only to injected content ─────
+    # ── finding 2: a privileged argument traceable to UNTRUSTED injected text ──
+    # Gating on taint is what makes this rare. Without it, every reduce/judge
+    # node trips it simply by acting on a sibling's legitimate output.
     for nid, n in nodes.items():
+        p = posture.get(nid, {})
+        if not p.get("tainted"):
+            continue
         inbound = " \n".join((n.get("inbound") or {}).values())
         if not inbound:
             continue
-        own = _distinctive(own_prompt.get(nid, ""))
-        inj = _distinctive(inbound) - own
+        inj = _distinctive(inbound) - _distinctive(own_prompt.get(nid, ""))
         if not inj:
             continue
+        # one finding per (node, tool), tokens merged — eight near-identical
+        # criticals for the same Bash node is spam, not eight problems.
+        per_tool = {}
         for tool, arg in tool_args.get(nid, []):
             if tool not in PRIVILEGED_SINK:
                 continue
-            hits = sorted(t for t in inj if t in (arg or ""))
-            if hits:
-                findings.append({
-                    "id": f"authority::{nid}::{tool}",
-                    "node": nid, "severity": "critical", "confidence": "confirmed",
-                    "title": "Tool argument traceable to injected content",
-                    "evidence": (f"{nid} called {tool} with {', '.join(hits[:3])}, which appears in the "
-                                 f"payload injected from upstream but nowhere in the node's own task."),
-                    "why": "The action was shaped by data the node received, not by its instructions.",
-                    "path": _one_path((n.get("inbound") and list(n["inbound"])[0]) or nid, nid, flow),
-                })
-
-    # ── finding 3: capability exercised beyond what was declared ──────────
-    for nid, p in posture.items():
-        if p["undeclared"]:
+            for t in inj:
+                if t in (arg or ""):
+                    per_tool.setdefault(tool, set()).add(t)
+        for tool, hits in per_tool.items():
+            # Taint through an LLM is weak: an agent that read the web and wrote
+            # a summary may carry nothing across. Only a verbatim web artefact
+            # (a URL) one hop from ingress is strong enough to call confirmed.
+            direct = any(s in flow and nid in flow.get(s, []) for s in p["taintFrom"])
+            url_like = any(h.startswith("http") for h in hits)
+            confirmed = url_like and direct
+            toks = sorted(hits)[:4]
             findings.append({
-                "id": f"capability::{nid}",
-                "node": nid, "severity": "medium", "confidence": "confirmed",
-                "title": "Used capability it did not declare",
-                "evidence": (f"{nid} declared {', '.join(nodes[nid].get('tools') or []) or 'nothing'} "
-                             f"but called {', '.join(p['undeclared'])}. agentType "
-                             f"'{nodes[nid].get('agentType')}' grants it regardless — the declaration is a label, not a sandbox."),
-                "why": "Real capability exceeds stated intent, so the graph understates blast radius.",
-                "path": [nid],
+                "id": f"authority::{nid}::{tool}",
+                "node": nid,
+                "tier": "OBSERVED",
+                "confidence": "confirmed" if confirmed else "possible",
+                "title": "Privileged argument matches upstream-supplied text",
+                "evidence": (f"{nid} called {tool} with {', '.join(toks)} — present in the payload "
+                             f"injected from {', '.join(p['taintFrom'][:2])} (which pulled web "
+                             f"content) and absent from {nid}'s own task."
+                             + ("" if confirmed else " The token is not a verbatim web artefact, so "
+                                "upstream influence is plausible, not established.")),
+                "why": "The action may have been shaped by fetched data rather than by instructions.",
+                "path": _one_path(p["taintFrom"][0], nid, flow),
             })
 
-    # ── finding 4: an ungated fan-out that routes around the verifier ─────
+    # ── finding 3: undeclared capability, only where it actually matters ──
+    # Measured: nodes exceed their declared tools in most runs, so a blanket
+    # warning is wallpaper. Alert only when the extra capability is a privileged
+    # sink on a node holding untrusted data; report the rest as one posture note.
+    drift = []
     for nid, p in posture.items():
-        if p["sink"] and p["taintFrom"]:
-            bypass = [s for s in p["taintFrom"] if not _path_has_verifier([s], nid, flow, nodes)]
-            if bypass and any(_path_has_verifier([s], nid, flow, nodes) for s in p["taintFrom"]):
-                findings.append({
-                    "id": f"bypass::{nid}",
-                    "node": nid, "severity": "high", "confidence": "confirmed",
-                    "title": "A branch routes around the verifier",
-                    "evidence": (f"Untrusted data reaches {nid} by several paths; the one from "
-                                 f"{', '.join(bypass)} crosses no verifier while another does."),
-                    "why": "A gate that only some paths cross is not a gate.",
-                    "path": _one_path(bypass[0], nid, flow),
-                })
+        if not p["undeclared"]:
+            continue
+        risky = [t for t in p["undeclared"] if t in PRIVILEGED_SINK]
+        if risky and (p["tainted"] or p["ingress"]):
+            findings.append({
+                "id": f"capability::{nid}",
+                "node": nid, "tier": "DECLARED", "confidence": "confirmed",
+                "title": "Undeclared privileged tool on a node holding fetched content",
+                "evidence": (f"{nid} declared {', '.join(nodes[nid].get('tools') or []) or 'nothing'} "
+                             f"but called {', '.join(risky)}, while holding fetched content. "
+                             f"agentType '{nodes[nid].get('agentType')}' grants it regardless."),
+                "why": "Capability exceeds what was declared, exactly where it matters most.",
+                "path": [nid],
+            })
+        else:
+            drift.append(nid)
 
-    findings.sort(key=lambda f: -SEV_ORDER.get(f["severity"], 0))
+    # A 'verifier bypass' detector was written and deleted here. It was a strict
+    # subset of taint:: — _path_has_verifier is False if ANY source path lacks a
+    # verifier, so every node bypass:: could fire on had already produced a
+    # taint:: card carrying the same sentence. Two cards, one fact.
+
+    for f in findings:
+        _check_claims(f)
+    findings.sort(key=lambda f: (-TIER_RANK.get(f["tier"], 0), f["node"]))
     counts = {}
     for f in findings:
-        counts[f["severity"]] = counts.get(f["severity"], 0) + 1
+        counts[f["tier"]] = counts.get(f["tier"], 0) + 1
+    notes = []
+    if drift:
+        notes.append(f"{len(drift)} node{'s' if len(drift) > 1 else ''} used tools beyond their "
+                     f"declaration ({', '.join(drift[:4])}{'…' if len(drift) > 4 else ''}). "
+                     f"Declared tools are a label; agentType grants the real capability.")
     return {
         "posture": posture,
         "findings": findings,
+        "notes": notes,
         "summary": {
             "counts": counts,
-            "worst": findings[0]["severity"] if findings else None,
+            "worst": findings[0]["tier"] if findings else None,
             "ingressNodes": sum(1 for p in posture.values() if p["ingress"]),
             "sinkNodes": sum(1 for p in posture.values() if p["sink"]),
+            "exposedNodes": sum(1 for p in posture.values() if p["ingress"] and p["sink"]),
             "clean": not findings,
         },
     }

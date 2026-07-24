@@ -855,6 +855,27 @@ class Handler(BaseHTTPRequestHandler):
             if not sid:
                 return self._send(200, json.dumps({"error": "need id"}))
             return self._send(200, json.dumps(session_feed(sid)))
+        # === security overlay: start ===
+        # Computed on demand, not in /state: it needs a full transcript parse per
+        # node, and the overlay is opt-in so the operational view stays cheap.
+        if u.path == "/security":
+            d = self._run_dir(q.get("run", [None])[0], sess)
+            if not d:
+                return self._send(200, json.dumps({"empty": True}))
+            try:
+                import security
+                g = build_graph(d)
+                used, args, own = {}, {}, {}
+                for n in g["nodes"]:
+                    a = build_agent(d, n["agentId"])
+                    evs = [e for e in a.get("events", []) if e.get("kind") == "tool_use"]
+                    used[n["id"]] = {e.get("name") for e in evs}
+                    args[n["id"]] = [(e.get("name"), str(e.get("input"))) for e in evs]
+                    own[n["id"]] = UPSTREAM_RE.sub("", a.get("prompt") or "")
+                return self._send(200, json.dumps(security.analyze(g, used, args, own)))
+            except Exception as e:
+                return self._send(200, json.dumps({"error": repr(e)}))
+        # === security overlay: end ===
         if u.path == "/chat":
             sid = q.get("id", [sess])[0]
             msgs = chat_read(sid)

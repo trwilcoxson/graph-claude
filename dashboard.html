@@ -234,6 +234,22 @@
   #termpop{margin-left:auto}
   #termhost{flex:1;display:flex;min-height:0;background:rgba(6,8,16,.30)}
   #termhost iframe{flex:1;width:100%;border:0;background:transparent}
+  /* control tooltips: say what a control is FOR, in one line */
+  [data-tip]{position:relative}
+  [data-tip]::after{content:attr(data-tip);position:absolute;top:calc(100% + 9px);left:50%;
+    transform:translateX(-50%) translateY(-4px);white-space:nowrap;z-index:60;pointer-events:none;
+    font-family:var(--mono);font-size:11px;letter-spacing:.02em;text-transform:none;color:#e9ebf7;
+    background:rgba(14,17,33,.96);border:1px solid rgba(255,255,255,.14);border-radius:9px;
+    padding:7px 11px;box-shadow:0 12px 34px rgba(0,0,0,.55);
+    opacity:0;transition:opacity .16s,transform .16s}
+  [data-tip]::before{content:"";position:absolute;top:calc(100% + 3px);left:50%;transform:translateX(-50%);
+    border:5px solid transparent;border-bottom-color:rgba(255,255,255,.14);z-index:61;opacity:0;
+    transition:opacity .16s;pointer-events:none}
+  [data-tip]:hover::after,[data-tip]:focus-visible::after{opacity:1;transform:translateX(-50%) translateY(0)}
+  [data-tip]:hover::before,[data-tip]:focus-visible::before{opacity:1}
+  .stats [data-tip]::after{left:auto;right:0;transform:translateY(-4px)}
+  .stats [data-tip]:hover::after{transform:translateY(0)}
+  .stats [data-tip]::before{left:auto;right:14px;transform:none}
   /* run picker + critical-path toggle */
   .picker{display:flex;align-items:center;gap:8px;margin-left:18px}
   .picker select{font-family:var(--mono);font-size:11px;color:var(--ink);background:var(--panel);
@@ -275,10 +291,13 @@
     border-radius:8px;padding:5px 10px;display:none}
   body.lod .lodbadge{display:block}
   /* warnings */
-  .warn{position:absolute;z-index:6;left:16px;top:76px;max-width:440px;font-size:11px;line-height:1.5;
+  .warn{position:absolute;z-index:6;right:16px;bottom:58px;max-width:330px;font-size:10.5px;line-height:1.45;
+    display:flex;gap:8px;align-items:flex-start;
     color:#ffd7c9;background:rgba(120,52,38,.5);border:1px solid rgba(255,122,69,.45);
     border-radius:10px;padding:8px 11px;-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}
   .warn b{color:#ffb59a}
+  .warnx{flex:none;background:none;border:0;color:#ffb59a;cursor:pointer;font-size:12px;line-height:1;padding:0 2px}
+  .warnx:hover{color:#fff}
   /* edge inspector reuses the drawer */
   .edgepay{font-size:11.5px;line-height:1.55;white-space:pre-wrap;word-break:break-word;color:var(--mut);
     background:rgba(255,255,255,.03);border:1px solid var(--line);border-radius:10px;padding:10px;
@@ -365,19 +384,19 @@
   </div>
   <span class="pill" id="status"><span class="dot"></span><span id="statustx">idle</span></span>
   <div class="picker">
-    <select id="runpick" title="which run to view"></select>
-    <button class="critbtn" id="critbtn" title="isolate the chain that sets wall-clock">critical path</button>
-    <button class="critbtn" id="cmpbtn" title="diff against the previous run of this workflow">compare</button>
+    <select id="runpick" data-tip="Every workflow run on disk, newest first."></select>
+    <button class="critbtn" id="critbtn" data-tip="The chain that set the run time. Shortening anything else changes nothing.">critical path</button>
+    <button class="critbtn" id="cmpbtn" data-tip="Diff against the previous run: duration and token change per node.">compare</button>
   </div>
   <div class="stats">
-    <div class="tile"><div class="v" id="s_agents">0</div><div class="l">agents</div></div>
-    <div class="tile"><div class="v" id="s_run">0</div><div class="l">live</div></div>
-    <div class="tile"><div class="v" id="s_tok">0</div><div class="l">tokens</div></div>
-    <div class="tile"><div class="v" id="s_time">0.0s</div><div class="l">wall clock</div></div>
-    <div class="tile" title="total agent time ÷ critical path — how much the topology actually parallelised">
+    <div class="tile" data-tip="Subagents finished / total in this run."><div class="v" id="s_agents">0</div><div class="l">agents</div></div>
+    <div class="tile" data-tip="Agents executing right now."><div class="v" id="s_run">0</div><div class="l">live</div></div>
+    <div class="tile" data-tip="Tokens across every agent in the run."><div class="v" id="s_tok">0</div><div class="l">tokens</div></div>
+    <div class="tile" data-tip="First agent start to last agent finish."><div class="v" id="s_time">0.0s</div><div class="l">wall clock</div></div>
+    <div class="tile" data-tip="Total agent time ÷ critical path. 1.0× means it ran serially.">
       <div class="v" id="s_par">—</div><div class="l">parallelism</div></div>
   </div>
-  <button class="tbtn" id="termtoggle" title="mirror of the tmux Claude Code session">terminal</button>
+  <button class="tbtn" id="termtoggle" data-tip="Live mirror of your tmux Claude session. Typing here types there.">terminal</button>
 </header>
 
 <div class="runbadge" id="runbadge"></div>
@@ -637,7 +656,9 @@ function animate(){
 
 /* ---------- fit / pan / zoom ---------- */
 function fit(L){
-  const w=vp.clientWidth-(document.getElementById('drawer').classList.contains('open')?390:0);
+  const dw=document.getElementById('drawer').classList.contains('open')?390:0;
+  const tw=termOn?Math.min(700,Math.max(380,innerWidth*0.42))+40:0;
+  const w=vp.clientWidth-dw-tw;
   const h=vp.clientHeight;
   // Fit big graphs by zooming out far, but swap to a compact level-of-detail
   // below ~0.45 so nodes stay legible as shapes instead of becoming confetti.
@@ -648,9 +669,10 @@ function fit(L){
              || cur.nodes.find(n=>n.state==='queued')
              || cur.nodes[cur.nodes.length-1];
     const p=focus && L.pos[focus.id];
-    view.x = p ? Math.min(8, w/2-(p.x+NW/2)*k) : (w-L.W*k)/2+8;
-  } else view.x=(w-L.W*k)/2+8;
-  view.y=(h-L.H*k)/2;
+    view.x = p ? tw+Math.min(8, w/2-(p.x+NW/2)*k) : tw+Math.max(8,(w-L.W*k)/2);
+  } else view.x=tw+Math.max(8,(w-L.W*k)/2);
+  const topPad=52;                     // clears the run-status badge
+  view.y=Math.max(topPad, (h-L.H*k)/2);
   applyView();
 }
 function applyView(){
@@ -938,12 +960,15 @@ async function compareWithPrevious(){
   }catch(e){ document.getElementById('dbody').innerHTML='<pre>compare failed</pre>'; }
 }
 document.getElementById('cmpbtn').addEventListener('click',compareWithPrevious);
+let warnMuted=0;
 function showWarnings(s){
+  if(warnMuted){const o=document.getElementById('warnbox'); if(o)o.remove(); return;}
   let w=document.getElementById('warnbox');
   if(!s.warnings||!s.warnings.length){ if(w) w.remove(); return; }
   if(!w){ w=document.createElement('div'); w.className='warn'; w.id='warnbox'; document.body.appendChild(w); }
-  w.innerHTML=`<b>${s.warnings.length} broken edge${s.warnings.length>1?'s':''}</b> — `+
-    s.warnings.slice(0,3).map(esc).join('; ')+(s.warnings.length>3?' …':'');
+  w.innerHTML=`<span><b>${s.warnings.length} broken edge${s.warnings.length>1?'s':''}</b>: `+
+    s.warnings.slice(0,2).map(esc).join('; ')+(s.warnings.length>2?` +${s.warnings.length-2} more`:'')+`</span>`+
+    `<button class="warnx" title="dismiss" onclick="this.parentNode.remove();warnMuted=1">✕</button>`;
 }
 
 /* ---------- data loop ---------- */
@@ -995,13 +1020,15 @@ function toggleTerm(on){
       const tag=document.createElement('span');
       tag.className='readonly'; tag.style.color='var(--claude2)';
       tag.style.borderColor='rgba(255,157,115,.45)';
-      tag.textContent='separate session';
-      tag.title='This terminal is its own Claude Code session — not the one this graph belongs to.';
+      tag.textContent='live mirror';
+      tag.title='Attached to tmux session "'+tm+'". This is a real terminal, not a recording: '
+              + 'typing here types into that session. Several clients can attach at once.';
       document.querySelector('.twbar').insertBefore(tag,document.getElementById('termclose'));
       const f=document.createElement('iframe'); f.src=TERMURL; f.title='claude code terminal';
       f.setAttribute('allowtransparency','true'); host.appendChild(f);
     } else startFeed(host);
   }
+  setTimeout(()=>{ if(cur && !userMoved) fit(layout(cur)); }, 380);
 }
 /* Chat straight into the live Claude session that launched this view — ask about
    the graph you're watching. Messages go to /chat; the session answers there. */
@@ -1052,7 +1079,9 @@ async function pollFeed(){
 }
 document.getElementById('termtoggle').addEventListener('click',()=>toggleTerm());
 document.getElementById('termclose').addEventListener('click',()=>toggleTerm(false));
-if(new URLSearchParams(location.search).get('term')==='1' && !window.__WFVIZ_REPLAY__) toggleTerm(true);
+// ?term=1 makes the terminal available; it does NOT open over the graph.
+// Use ?term=open to start with it open.
+if(new URLSearchParams(location.search).get('term')==='open' && !window.__WFVIZ_REPLAY__) toggleTerm(true);
 
 animate();
 if(window.__WFVIZ_REPLAY__) startReplay(window.__WFVIZ_REPLAY__);
