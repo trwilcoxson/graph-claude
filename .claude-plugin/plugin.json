@@ -1,0 +1,12 @@
+{
+  "name": "graph-claude",
+  "version": "0.1.0",
+  "description": "Live graph view of Claude Code dynamic workflows: one node per subagent, one edge per piece of data passed between them, extended into the files, hosts and commands the run touched.",
+  "author": {
+    "name": "Tim Wilcoxson",
+    "url": "https://github.com/trwilcoxson"
+  },
+  "homepage": "https://github.com/trwilcoxson/graph-claude",
+  "license": "MIT",
+  "hooks": "./hooks/hooks.json"
+}

@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Workflow",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/wfviz-term\" >/dev/null 2>&1",
+            "timeout": 15,
+            "statusMessage": "Opening the workflow graph..."
+          }
+        ]
+      }
+    ]
+  }
+}

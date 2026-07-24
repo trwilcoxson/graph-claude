@@ -29,23 +29,36 @@ workflow already writes, so it works on runs started before you installed it.
 
 ## Install
 
-Requires Python 3.9+ (standard library only) and Claude Code. `tmux` and `ttyd`
-are optional and only needed for the terminal panel.
+Requires Python 3.9+ (standard library only). `tmux` and `ttyd` are optional and
+only needed for the terminal panel.
+
+Install it as a Claude Code plugin:
+
+```
+/plugin marketplace add trwilcoxson/graph-claude
+/plugin install graph-claude
+```
+
+That is all. The plugin registers a hook on the Workflow tool, so the graph
+opens by itself whenever a workflow runs. Nothing is written to your
+`settings.json`, and `/plugin uninstall graph-claude` removes it.
+
+**Restart Claude Code after installing.** Hooks are loaded when a session
+starts, so a session that is already open will not pick up a newly installed
+plugin.
+
+### Without the plugin
+
+If you would rather clone the repo, `./install.sh` registers the same hook
+against your clone, backs up `settings.json` first, and keeps any hooks and
+settings you already have. `./install.sh --status` and `./install.sh
+--uninstall` do what they say.
 
 ```bash
 git clone https://github.com/trwilcoxson/graph-claude.git
 cd graph-claude
 ./install.sh
 ```
-
-The installer registers a `PreToolUse` hook on the Workflow tool in
-`~/.claude/settings.json`, so the graph opens by itself whenever a workflow
-runs. It backs the file up first, keeps any hooks and settings you already have,
-and is safe to run twice. `./install.sh --status` shows what is installed and
-`./install.sh --uninstall` removes it.
-
-**Restart Claude Code after installing.** Hooks are loaded when a session
-starts, so a session that is already open will not pick up the new hook.
 
 To open the graph without waiting for a workflow:
 
@@ -190,7 +203,8 @@ to tmux. For those the panel shows a read-only feed of the session transcript.
 | `gen_replay.py` | bakes a finished run into a standalone HTML replay |
 | `demo/demo-workflow.js` | example workflow where every edge carries data |
 | `wfviz`, `wfviz-term`, `ccm` | launchers |
-| `install.sh` | registers/removes the Workflow hook |
+| `.claude-plugin/`, `hooks/` | plugin manifest and the Workflow hook |
+| `install.sh` | same hook, for a plain clone instead of a plugin |
 
 ## Notes
 

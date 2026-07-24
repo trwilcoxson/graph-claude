@@ -1,0 +1,17 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "graph-claude",
+  "description": "Live graph view of Claude Code dynamic workflows.",
+  "owner": {
+    "name": "Tim Wilcoxson",
+    "url": "https://github.com/trwilcoxson"
+  },
+  "plugins": [
+    {
+      "name": "graph-claude",
+      "description": "Watch a workflow run as a graph: every subagent, its model and reasoning effort, the data on each edge, the critical path, and the files, hosts and commands it touched.",
+      "source": "./",
+      "category": "observability"
+    }
+  ]
+}
