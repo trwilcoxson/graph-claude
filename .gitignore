@@ -19,3 +19,4 @@ demo/*.gif
 # Python
 __pycache__/
 *.py[cod]
+docs/_vid/

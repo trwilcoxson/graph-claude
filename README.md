@@ -1,123 +1,146 @@
-# graph-claude — a living graph for Claude Code dynamic workflows
+# graph-claude
 
-Run a **dynamic workflow** in Claude Code (say "workflow" in a prompt, run
-`/deep-research`, or turn on ultracode) and Claude writes a JS orchestration
-script and spawns a fleet of subagents. wfviz turns that fleet into a graph you
-watch in real time: one node per subagent with its **model, effort, tools,
-tokens and state**, edges for data flow, phase columns — and **click any node to
-read its actual transcript**: prompt, thinking, tool calls, results, timings.
-Nothing is mocked; every field is read from the running workflow's own files.
+A live graph view of Claude Code dynamic workflows. Each node is one subagent.
+Each edge is data passed from one agent's output into another's prompt.
 
-- **Graph** — [live-graph.png](docs/graph.png): scope→search→reduce→verify→synthesize, tiers colour-coded, exact `deps` edges.
-- **Hover** — a frosted tooltip glowing in that node's model-tier colour, streaming its live trace (tool calls, arguments, outputs, timings), refreshed every 900ms while the agent runs. `?hover=<label>` deep-links it.
-- **Drill-down** — click a node → its real result, prompt, and event-by-event transcript, streaming while it runs.
+https://github.com/user-attachments/assets/DEMO_PLACEHOLDER
 
-> Note: Claude's extended thinking is persisted encrypted — transcripts contain
-> `{"type":"thinking","thinking":"","signature":"…"}` — so no plaintext
-> chain-of-thought exists locally to stream. The tooltip shows the *observable*
-> trace (what the agent did), and renders a "reasoning" section only if
-> non-empty thinking text is ever present.
-- **Shareable replay** — `gen_replay.py` bakes a finished run (lifecycle + real transcripts) into one self-contained HTML page.
+![the graph](docs/graph.png)
 
-## Run it
+## Why a graph
+
+A Claude Code workflow spawns a fleet of subagents from a JavaScript
+orchestration script. The script decides what runs in parallel, what waits, and
+what feeds what. That structure is a directed acyclic graph, but the terminal
+prints it as a list of progress lines.
+
+The list hides what you need when a run misbehaves:
+
+- which agents ran at the same time, and which sat waiting
+- which chain of dependent agents set the total run time
+- whether a step received its upstream output, or ran without it
+- which model and reasoning level each agent used, and what that cost
+
+A graph shows all of it at once. This tool builds that graph from files the
+workflow already writes, so it works on runs started before you installed it.
+
+## Install and run
+
+Requires Python 3.9+ (standard library only) and Claude Code.
 
 ```bash
-./wfviz                      # start server + open browser (idempotent)
-# or
-python3 wfviz.py --port 8777 # then open http://127.0.0.1:8777
+git clone https://github.com/trwilcoxson/graph-claude.git
+cd graph-claude
+./wfviz
 ```
 
-It auto-discovers the newest workflow across all your sessions and follows it
-live. Scroll to zoom, drag to pan, click a node, double-click to re-fit.
-`?node=<label>` deep-links straight to a node's transcript.
+That starts a local server on port 8777 and opens a browser. It finds the most
+recent workflow across your Claude Code sessions and follows it while it runs.
 
-## How it stays truly live (the part that matters)
+Controls: scroll to zoom, drag to pan, double-click to refit, click a node for
+its transcript, click an edge for the data that crossed it, Tab and Enter for
+keyboard access.
 
-A completed workflow leaves a tidy `tasks/<id>.output` and `workflows/<id>.json`
-— but both are written **only at completion**; during a run they're absent or
-mid-write. Polling them shows nothing, then snaps to done. So wfviz reads the
-files that actually update in real time:
+## How it reads a run
 
-| source | gives | live? |
-|---|---|---|
-| `subagents/workflows/wf_<id>/journal.jsonl` | per-agent started/result + result value | ✅ line-atomic, live |
-| `subagents/workflows/wf_<id>/agent-<id>.jsonl` | the agent's full transcript (prompt, thinking, tool calls, timings, tokens) | ✅ grows live |
-| `subagents/workflows/wf_<id>/agent-<id>.meta.json` | model, agentType | ✅ at spawn |
-| `workflows/wf_<id>.json` | final tokens/labels/edges | ⛔ completion only → used as the "done" signal + enrichment |
+Claude Code writes two kinds of files. The completion records
+(`tasks/<id>.output`, `workflows/<id>.json`) are written only when a run ends,
+so polling them shows nothing until it is over. These update during the run:
 
-The one thing those live files lack is the *labels and edges* — which node is
-which, and what feeds what. That identity rides into each agent's prompt as a
-`⟦wfnode {...}⟧` header (see below), so the labeled graph and its edges are
-recoverable live from the transcripts alone. Without the header you still get a
-real graph, keyed by agent id + prompt preview and laid out by start-time
-concurrency.
+| file | contains |
+|---|---|
+| `subagents/workflows/wf_<id>/journal.jsonl` | per-agent start and result, appended line by line |
+| `subagents/workflows/wf_<id>/agent-<id>.jsonl` | that agent's transcript: prompt, tool calls, tokens, timings |
+| `subagents/workflows/wf_<id>/agent-<id>.meta.json` | agent type and model alias |
 
-## Make any workflow render richly (the standard)
+The server tails those. The completion record is used when it appears, to mark
+the run finished and fill in final token totals.
 
-Paste the preamble from [`viz-preamble.js`](viz-preamble.js) at the top of a
-workflow script, wrap `agent()` in `vnode()`, and name each node's upstreams
-with `deps`:
+Node labels and dependencies are in none of those files. A workflow supplies
+them by prefixing each agent's prompt with a `⟦wfnode {...}⟧` header, which the
+server parses back out of the transcript. Without the header you still get a
+graph, with labels derived from each prompt and layout inferred from start
+times.
+
+## Authoring a workflow
+
+Copy `viz-preamble.js` into a workflow script and call `vnodeFrom` instead of
+`agent`:
 
 ```js
-phase('Search')
-const hits = await parallel(SOURCES.map(s => () =>
-  vnode(s.prompt, { label:`search:${s.key}`, phase:'Search', deps:['scope'],
-                    model:'sonnet', effort:'low', tools:['Web','Read'],
-                    schema: ITEM, agentType:'general-purpose' })))
-
-phase('Synthesize')
-const report = await vnode(writePrompt, { label:'synth', phase:'Synthesize',
-  deps:['search:releases','search:blogs'], model:'opus', effort:'high' })
+phase('Probe')
+const probes = await parallel(ANGLES.map((k) => () =>
+  vnodeFrom({ scope: scope.finding },
+    `Expand the "${k}" angle in ~60 words.`,
+    { label: `probe:${k}`, phase: 'Probe', schema: R, model: 'haiku', effort: 'low',
+      agentType: 'general-purpose', tools: ['Read', 'Web'] })))
 ```
 
-`deps` are the labels whose output feeds this node — they become the edges.
-`vnode()` prepends the `⟦wfnode⟧` header, strips the viz-only `tools`/`deps`
-keys, and calls `agent()` normally. It costs zero orchestration tokens.
+`vnodeFrom` takes the upstream results as its first argument. It injects them
+into the prompt and derives the edges from the same keys, so an edge on screen
+always corresponds to data the downstream agent received. Declaring dependencies
+by hand lets the two drift apart, giving you a graph that shows a connection
+while the agent runs without the input.
 
-## Terminal mirror — every session mirrors *itself*
+`vnode` is the lower-level form if you want to declare `deps` yourself. Both
+accept `role` (`router`, `verifier`, `reducer`, `judge`) to give a node a
+distinct appearance.
 
-`wfviz-term` opens the graph with a **live, controllable Claude terminal**
-floating over it: a `ttyd` web terminal attached to a `tmux` session. tmux allows
-many clients on one session, so the browser terminal *mirrors and controls* the
-same session — drive Claude Code from the browser while the graph animates.
+## What the graph shows
 
-Launch each Claude Code session with `ccm` so it lives in its own tmux session:
+Per node: label, phase, model with version (Haiku 4.5, Opus 5), reasoning
+effort, tools, tokens, tool calls, duration, state. Hovering streams the agent's
+tool calls as they happen. Clicking opens the transcript and result.
 
-```bash
-./ccm          # tmux session named after the current directory
-./ccm mywork   # or name it yourself; re-run to re-attach
-```
+Per edge: fan-out, merge, or plain flow, plus the payload that crossed it. Edges
+carrying data animate. Edges whose endpoints are both finished go still, so
+movement on screen means work in progress.
 
-From then on, a `PreToolUse` hook on the `Workflow` tool (in `~/.claude/settings.json`,
-pointing at this repo's `wfviz-term`) runs `wfviz-term` automatically, so **asking for a
-workflow pops open the browser showing the session you asked from**:
+Derived measures:
 
-- it reads `$TMUX` to learn **which tmux session fired it**, and mirrors that one
-- each session gets **its own ttyd port** (registry in `~/.wfviz/`), so several
-  sessions can have their own mirror open simultaneously
-- it reads the hook's JSON payload for the Claude `session_id` and scopes the
-  graph with `?session=<id>`, so you see **that session's** workflow runs
+- **Critical path.** The longest duration-weighted chain. Shortening anything
+  off this path does not make the run faster. Marked with a diamond, isolated by
+  the CRITICAL PATH button.
+- **Float.** Per node, how long it could overrun before delaying the run. Zero
+  float means it is on the critical path.
+- **Parallelism.** Total agent time divided by critical path length. A value
+  near 1.0 means the run was mostly serial despite its shape.
+- **Broken edges.** Dependencies naming a node that does not exist, reported
+  rather than dropped.
+- **Cycles.** Found with a depth-first search for back edges.
 
-Remove the hook entry to disable. `?termport=<port>` picks a mirror manually.
+Deep runs are contracted before drawing. A run of nodes that each have one
+predecessor and one successor carries no branching, so it collapses into a
+single node showing the step count and summed totals. Click it to list the
+members. The largest run tested here is 155 nodes across 126 columns, which is a
+40,000 pixel canvas uncontracted.
 
-**If the session isn't tmux-hosted** it still follows *that* session — never some
-other one. A process can't hand its live TTY to tmux after the fact (macOS blocks
-`reptyr`-style reparenting), so instead the window shows a **read-only live feed**
-of the session's own transcript (`~/.claude/projects/*/<session-id>.jsonl`,
-tailed via `/session?id=`): your prompts, Claude's replies and every tool call,
-refreshed every 2s. Start the session with `ccm` to get a terminal you can type in.
+## Terminal panel
 
-## Colour legend
-
-**Opus** amber · **Sonnet** cyan · **Haiku** mint · **Fable** violet (model tier, node accent) ·
-**rust→amber** edge = fan-out · **teal→green** edge = merge ·
-dashed ghost = planned · glowing sheen = running · ✓ = done.
+`./wfviz-term` opens the graph with a terminal panel attached to a tmux session,
+so you can drive Claude Code from the same window as the graph. Start sessions
+with `./ccm` to make them mirrorable. A session already running outside tmux
+cannot be attached to after the fact, because a process cannot hand its live TTY
+to tmux. For those the panel shows a read-only feed of the session transcript.
 
 ## Files
 
-- `wfviz.py` — live server: reads journal + transcripts + meta, serves `/state`, `/agent`, `/runs`
-- `dashboard.html` — the animated graph + transcript drawer (works live or in replay)
-- `viz-preamble.js` — the copy-paste convention for labels/edges/effort/tools
-- `gen_replay.py` — bake a finished run into a shareable replay page
-- `wfviz` — launcher (graph only)
-- `wfviz-term` — launcher with the tmux/ttyd terminal mirror panel
+| file | purpose |
+|---|---|
+| `wfviz.py` | server: reads run files, builds the graph, serves `/state`, `/agent`, `/runs`, `/compare` |
+| `dashboard.html` | the graph UI |
+| `viz-preamble.js` | `vnode` and `vnodeFrom` authoring helpers |
+| `gen_replay.py` | bakes a finished run into a standalone HTML replay |
+| `demo/demo-workflow.js` | example workflow where every edge carries data |
+| `wfviz`, `wfviz-term`, `ccm` | launchers |
+
+## Notes
+
+Claude's extended thinking is stored encrypted. Transcripts contain
+`{"type":"thinking","thinking":"","signature":"..."}`, so there is no plaintext
+reasoning to display. The hover panel shows the observable trace instead: tool
+calls, arguments, results, and timings.
+
+## License
+
+MIT
