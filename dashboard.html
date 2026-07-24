@@ -247,8 +247,10 @@
     transition:opacity .16s;pointer-events:none}
   [data-tip]:hover::after,[data-tip]:focus-visible::after{opacity:1;transform:translateX(-50%) translateY(0)}
   [data-tip]:hover::before,[data-tip]:focus-visible::before{opacity:1}
-  .stats [data-tip]::after{left:auto;right:0;transform:translateY(-4px)}
-  .stats [data-tip]:hover::after{transform:translateY(0)}
+  .stats [data-tip]::after,#termtoggle[data-tip]::after{left:auto;right:0;transform:translateY(-4px);
+    white-space:nowrap}
+  #termtoggle[data-tip]::before{left:auto;right:14px;transform:none}
+  .stats [data-tip]:hover::after,#termtoggle[data-tip]:hover::after{transform:translateY(0)}
   .stats [data-tip]::before{left:auto;right:14px;transform:none}
   /* run picker + critical-path toggle */
   .picker{display:flex;align-items:center;gap:8px;margin-left:18px}
@@ -854,6 +856,7 @@ function openEdge(e){
       <div class="kv"><span class="k">to</span><span class="val">${esc(e.to)}</span></div>
       <div class="kv"><span class="k">kind</span><span class="val">${esc(kindLabel)}</span></div>
       <div class="kv"><span class="k">critical path</span><span class="val">${e.onCritical?'yes':'no'}</span></div>
+      <div class="kv"><span class="k">provenance</span><span class="val" id="edgeprov">—</span></div>
     </div></div>
     <div id="dbody"><div class="block"><div class="k">payload that crossed${payload?` · ${payload.length} chars`:''}</div>
       ${payload
@@ -861,6 +864,20 @@ function openEdge(e){
         : `<pre>No payload recorded. This edge was declared with deps but no upstream text was
 injected into the downstream prompt — the connection is drawn, but nothing moved
 across it. Author with vnodeFrom() to make the edge real.</pre>`}</div></div>`;
+  edgeProvenance(e);
+}
+function edgeProvenance(e){
+  // The payload text is already shown; this says where it ORIGINATED. An edge
+  // carrying a sibling's summary and one carrying fetched web content look
+  // identical until you label them.
+  const el=document.getElementById('edgeprov'); if(!el) return;
+  const p=((secData&&secData.posture)||{})[e.from];
+  if(!p){ el.textContent='run the security view to trace this'; el.style.color='var(--dim)'; return; }
+  if(p.ingress&&p.ingress.length){ el.textContent='outside content via '+p.ingress.join(', ');
+    el.style.color='#9fb4ff'; }
+  else if(p.tainted){ el.textContent='carries content fetched by '+(p.taintFrom||[]).join(', ');
+    el.style.color='#d9a7ff'; }
+  else { el.textContent='agent-authored'; el.style.color='var(--mut)'; }
 }
 function closeDrawer(){selected=null;selAid=null;document.getElementById('drawer').classList.remove('open');
   document.querySelectorAll('.node.sel').forEach(e=>e.classList.remove('sel'));}

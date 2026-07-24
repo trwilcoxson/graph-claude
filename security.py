@@ -34,6 +34,10 @@ PRIVILEGED_SINK = {
 }
 # Heuristic: nothing in the format marks a checkpoint, so gates are named.
 VERIFIER_HINT = re.compile(r"verif|review|check|judge|gate|audit|adjudic", re.I)
+# A privileged call that sends data outward is materially worse than one that
+# writes a local file; PRIVILEGED_SINK treats them alike, so look at the argument.
+EGRESS_HINT = re.compile(r"\bcurl\b|\bwget\b|\bnc\b|\bscp\b|\brsync\b|"
+                         r"https?://|requests\.(?:post|put)|fetch\(", re.I)
 
 # Evidence-strength ladder, not a risk score. A reviewer needs to know whether
 # they are looking at an architecture smell or a live event, so every finding
@@ -121,6 +125,14 @@ def analyze(graph, tools_used, tool_args, own_prompt):
                     stack.append(y)
         return seen
 
+    ends = {n["id"]: ((n.get("startedAt") or 0) + (n.get("durationMs") or 0))
+            for n in nodes.values() if n.get("startedAt")}
+    sink_at = {}
+    for nid, calls in (tool_args or {}).items():
+        ts = [c[2] for c in calls if len(c) > 2 and c[2] and c[0] in PRIVILEGED_SINK]
+        if ts:
+            sink_at[nid] = min(ts)
+
     posture, findings = {}, []
     for nid, n in nodes.items():
         used = set(tools_used.get(nid, ()))
@@ -159,16 +171,21 @@ def analyze(graph, tools_used, tool_args, own_prompt):
         srcs = [s for s in p["taintFrom"] if s != nid]
         if not (p["sink"] and srcs):
             continue
-        gated = _path_has_verifier(srcs, nid, flow, nodes)
+        gated = _path_has_verifier(srcs, nid, flow, nodes, sink_at.get(nid), ends)
         ing = sorted({t for s in srcs for t in posture[s]["ingress"]})
+        chain = _one_path(srcs[0], nid, flow)
+        hops = len(chain) - 1
+        route = " \u2192 ".join(chain)
         findings.append({
             "id": f"taint::{nid}",
             "node": nid, "tier": "REACHABLE",
-            "confidence": "possible", "gated": gated,
-            "title": "Content of unknown provenance reached a privileged tool",
-            "evidence": (f"{', '.join(srcs)} pulled content via {', '.join(ing)}; that output was "
-                         f"injected into {nid}, which called {', '.join(p['sink'])}."
-                         + (" A verifier lies on the path." if gated else " No verifier lies on that path.")),
+            "confidence": "possible", "gated": gated, "hops": hops,
+            "title": ("Content of unknown provenance reached a privileged tool"
+                      + (f" after {hops} hops" if hops > 1 else "")),
+            "evidence": (f"{', '.join(srcs)} pulled content via {', '.join(ing)}; it travelled "
+                         f"{route} and {nid} called {', '.join(p['sink'])}."
+                         + (" A verifier finished before that call."
+                            if gated else " No verifier finished before that call.")),
             "why": "Content of unknown provenance can shape a world-changing action.",
             "path": _one_path(srcs[0], nid, flow),
         })
@@ -189,7 +206,7 @@ def analyze(graph, tools_used, tool_args, own_prompt):
         # one finding per (node, tool), tokens merged — eight near-identical
         # criticals for the same Bash node is spam, not eight problems.
         per_tool = {}
-        for tool, arg in tool_args.get(nid, []):
+        for tool, arg, *_ in tool_args.get(nid, []):
             if tool not in PRIVILEGED_SINK:
                 continue
             for t in inj:
@@ -202,6 +219,7 @@ def analyze(graph, tools_used, tool_args, own_prompt):
             direct = any(s in flow and nid in flow.get(s, []) for s in p["taintFrom"])
             url_like = any(h.startswith("http") for h in hits)
             confirmed = url_like and direct
+            egress = any(EGRESS_HINT.search(a or "") for t, a, *_ in tool_args.get(nid, []) if t == tool)
             toks = sorted(hits)[:4]
             findings.append({
                 "id": f"authority::{nid}::{tool}",
@@ -214,7 +232,10 @@ def analyze(graph, tools_used, tool_args, own_prompt):
                              f"content) and absent from {nid}'s own task."
                              + ("" if confirmed else " The token is not a verbatim web artefact, so "
                                 "upstream influence is plausible, not established.")),
-                "why": "The action may have been shaped by fetched data rather than by instructions.",
+                "egress": egress,
+                "why": ("The action sends data outward and may have been shaped by fetched content."
+                        if egress else
+                        "The action may have been shaped by fetched data rather than by instructions."),
                 "path": _one_path(p["taintFrom"][0], nid, flow),
             })
 
@@ -287,11 +308,23 @@ def _one_path(src, dst, adj):
     return [src, dst]
 
 
-def _path_has_verifier(srcs, dst, adj, nodes):
-    """True when EVERY carrying path from each source to dst crosses a verifier."""
+def _path_has_verifier(srcs, dst, adj, nodes, sink_at=None, ends=None):
+    """True when EVERY carrying path from each source to dst crosses a verifier
+    that actually finished BEFORE the privileged call it supposedly gates.
+
+    Name-matching alone was too generous: a node called 'verify' that ran in
+    parallel with the sink, or after it, gates nothing. Every lateral-movement
+    and trust-boundary claim rests on this boolean, so it has to earn itself."""
     for s in srcs:
         for path in _all_paths(s, dst, adj):
-            if not any(is_verifier(nodes.get(p, {})) for p in path[1:-1]):
+            covering = []
+            for p in path[1:-1]:
+                if not is_verifier(nodes.get(p, {})):
+                    continue
+                if sink_at and ends and ends.get(p) and ends[p] > sink_at:
+                    continue                      # finished too late to gate it
+                covering.append(p)
+            if not covering:
                 return False
     return True
 

@@ -870,7 +870,7 @@ class Handler(BaseHTTPRequestHandler):
                     a = build_agent(d, n["agentId"])
                     evs = [e for e in a.get("events", []) if e.get("kind") == "tool_use"]
                     used[n["id"]] = {e.get("name") for e in evs}
-                    args[n["id"]] = [(e.get("name"), str(e.get("input"))) for e in evs]
+                    args[n["id"]] = [(e.get("name"), str(e.get("input")), e.get("t")) for e in evs]
                     own[n["id"]] = UPSTREAM_RE.sub("", a.get("prompt") or "")
                 return self._send(200, json.dumps(security.analyze(g, used, args, own)))
             except Exception as e:
