@@ -27,18 +27,35 @@ The list hides what you need when a run misbehaves:
 A graph shows all of it at once. This tool builds that graph from files the
 workflow already writes, so it works on runs started before you installed it.
 
-## Install and run
+## Install
 
-Requires Python 3.9+ (standard library only) and Claude Code.
+Requires Python 3.9+ (standard library only) and Claude Code. `tmux` and `ttyd`
+are optional and only needed for the terminal panel.
 
 ```bash
 git clone https://github.com/trwilcoxson/graph-claude.git
 cd graph-claude
-./wfviz
+./install.sh
 ```
 
-That starts a local server on port 8777 and opens a browser. It finds the most
-recent workflow across your Claude Code sessions and follows it while it runs.
+The installer registers a `PreToolUse` hook on the Workflow tool in
+`~/.claude/settings.json`, so the graph opens by itself whenever a workflow
+runs. It backs the file up first, keeps any hooks and settings you already have,
+and is safe to run twice. `./install.sh --status` shows what is installed and
+`./install.sh --uninstall` removes it.
+
+**Restart Claude Code after installing.** Hooks are loaded when a session
+starts, so a session that is already open will not pick up the new hook.
+
+To open the graph without waiting for a workflow:
+
+```bash
+./wfviz          # graph only
+./wfviz-term     # graph plus the terminal panel
+```
+
+It finds the most recent workflow across your Claude Code sessions and follows
+it while it runs.
 
 Controls: scroll to zoom, drag to pan, double-click to refit, click a node for
 its transcript, click an edge for the data that crossed it, Tab and Enter for
@@ -173,6 +190,7 @@ to tmux. For those the panel shows a read-only feed of the session transcript.
 | `gen_replay.py` | bakes a finished run into a standalone HTML replay |
 | `demo/demo-workflow.js` | example workflow where every edge carries data |
 | `wfviz`, `wfviz-term`, `ccm` | launchers |
+| `install.sh` | registers/removes the Workflow hook |
 
 ## Notes
 
