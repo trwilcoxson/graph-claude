@@ -222,6 +222,20 @@ def read_journal(run_dir):
     return out
 
 
+def run_cwd(run_dir):
+    """Working directory the agents ran in, taken from their transcripts."""
+    for f in sorted(glob.glob(os.path.join(run_dir, "agent-*.jsonl")))[:3]:
+        try:
+            with open(f) as fh:
+                for line in fh:
+                    m = re.search(r'"cwd"\s*:\s*"([^"]+)"', line)
+                    if m:
+                        return m.group(1)
+        except Exception:
+            pass
+    return None
+
+
 def runid_of(run_dir):
     return os.path.basename(run_dir)
 
@@ -855,6 +869,26 @@ class Handler(BaseHTTPRequestHandler):
             if not sid:
                 return self._send(200, json.dumps({"error": "need id"}))
             return self._send(200, json.dumps(session_feed(sid)))
+        # === system context overlay: start ===
+        # Second graph layer: the files, hosts, commands and services the run
+        # actually touched. On demand like /security — it needs a full transcript
+        # parse per node.
+        if u.path == "/context":
+            d = self._run_dir(q.get("run", [None])[0], sess)
+            if not d:
+                return self._send(200, json.dumps({"empty": True}))
+            try:
+                import context
+                g = build_graph(d)
+                evs = {}
+                for n in g["nodes"]:
+                    a = build_agent(d, n["agentId"])
+                    evs[n["id"]] = [(e.get("name"), e.get("input"), e.get("t"))
+                                    for e in a.get("events", []) if e.get("kind") == "tool_use"]
+                return self._send(200, json.dumps(context.analyze(g, evs, cwd=run_cwd(d))))
+            except Exception as e:
+                return self._send(200, json.dumps({"error": repr(e)}))
+        # === system context overlay: end ===
         # === security overlay: start ===
         # Computed on demand, not in /state: it needs a full transcript parse per
         # node, and the overlay is opt-in so the operational view stays cheap.

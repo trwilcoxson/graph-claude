@@ -252,6 +252,34 @@
   #termtoggle[data-tip]::before{left:auto;right:14px;transform:none}
   .stats [data-tip]:hover::after,#termtoggle[data-tip]:hover::after{transform:translateY(0)}
   .stats [data-tip]::before{left:auto;right:14px;transform:none}
+  /* === system context overlay: start === */
+  :root{--z-workspace:#6ee7b7;--z-home:#57c9f6;--z-system:#b48cff;--z-temp:#8b90a8;
+        --z-loopback:#ffd68a;--z-lan:#ff9d73;--z-internet:#ff6b6b;--z-service:#f0abfc}
+  .lane{position:absolute;pointer-events:none}
+  .lane .lname{font-size:9px;letter-spacing:.24em;text-transform:uppercase;color:var(--dim);
+    display:flex;align-items:center;gap:7px;white-space:nowrap}
+  .lane .lname i{width:7px;height:7px;border-radius:2px;display:inline-block}
+  .lane .lrule{height:1px;background:linear-gradient(90deg,var(--line),transparent);margin-top:5px}
+  .ent{position:absolute;display:flex;align-items:center;gap:6px;max-width:230px;cursor:pointer;
+    padding:5px 9px;border-radius:8px;font-size:11px;color:#cfd3e8;
+    background:linear-gradient(180deg,rgba(24,28,52,.9),rgba(15,18,38,.9));
+    border:1px solid var(--line);transition:border-color .2s,transform .2s,box-shadow .2s}
+  .ent:hover{transform:translateY(-1px);border-color:var(--ez);box-shadow:0 6px 20px rgba(0,0,0,.45)}
+  .ent.sel{border-color:var(--ez);box-shadow:0 0 0 1px var(--ez)}
+  .ent .edot{width:7px;height:7px;border-radius:2px;flex:none;background:var(--ez)}
+  .ent .elabel{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:rtl;text-align:left}
+  .ent .ecount{flex:none;font-size:9px;color:var(--dim);font-variant-numeric:tabular-nums}
+  .ent:focus-visible{outline:2px solid var(--sonnet);outline-offset:2px}
+  #edgeG path.entedge{stroke:var(--ez,#4a5480);stroke-width:1;opacity:.3;fill:none}
+  .ent.dim{opacity:.2} .node.dim{opacity:.3;filter:saturate(.5)}
+  .ent,.node{transition:opacity .18s}
+  #edgeG path.implicit{stroke:#ff9d73;stroke-width:2;stroke-dasharray:6 5;opacity:.9;fill:none}
+  .sysnote{position:absolute;z-index:5;left:16px;bottom:58px;max-width:420px;font-size:11px;
+    line-height:1.5;color:#ffd7c9;background:rgba(120,52,38,.5);border:1px solid rgba(255,157,115,.45);
+    border-radius:10px;padding:9px 12px;-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}
+  .sysnote b{color:#ffb59a}
+  .sysnote .sx{float:right;cursor:pointer;color:#ffb59a;background:none;border:0;font-size:12px}
+  /* === system context overlay: end === */
   /* run picker + critical-path toggle */
   .picker{display:flex;align-items:center;gap:8px;margin-left:18px}
   .picker select{font-family:var(--mono);font-size:11px;color:var(--ink);background:var(--panel);
@@ -388,6 +416,7 @@
   <div class="picker">
     <select id="runpick" data-tip="Every workflow run on disk, newest first."></select>
     <button class="critbtn" id="critbtn" data-tip="The chain that set the run time. Shortening anything else changes nothing.">critical path</button>
+    <button class="critbtn" id="sysbtn" data-tip="Files, hosts, commands and services this run actually touched.">system</button>
     <button class="critbtn" id="cmpbtn" data-tip="Diff against the previous run: duration and token change per node.">compare</button>
   </div>
   <div class="stats">
@@ -579,7 +608,8 @@ function render(state){
   // drop removed
   [...stage.querySelectorAll('.node')].forEach(el=>{ if(!seen[el.dataset.id]) el.remove(); });
 
-  updateStats(state); setBadge(state);
+  lastL=L; updateStats(state); setBadge(state);
+  if(sysOn) renderSystem(L,state);
   if(first||!userMoved) fit(L);
   if(selected){ const n=nById(selected);
     if(n){ drawMeta(n); if(n.state==='running') loadTranscript(n,false); }
@@ -756,7 +786,7 @@ async function loadTranscript(n, showLoading){
 /* ---------- hover: live reasoning trace ---------- */
 let tip=null, tipId=null, tipTimer=null, tipPoll=null;
 function ensureTip(){ if(!tip){ tip=document.createElement('div'); tip.className='rtip'; document.body.appendChild(tip); } return tip; }
-function hideTip(){ clearTimeout(tipTimer); clearInterval(tipPoll); tipPoll=null; tipId=null; if(tip) tip.classList.remove('show'); }
+function hideTip(){ clearTimeout(tipTimer); clearInterval(tipPoll); tipPoll=null; tipId=null; if(tip) tip.classList.remove('show'); if(sysOn&&typeof clearFocus==='function') clearFocus(); }
 function placeTip(el){
   const r=el.getBoundingClientRect(), t=ensureTip();
   const w=352, h=Math.min(300, t.offsetHeight||300);
@@ -766,6 +796,7 @@ function placeTip(el){
 }
 async function showTip(id, el){
   const n=nById(id); if(!n) return;
+  if(sysOn) focusLinks('agent',id);
   tipId=id; const t=ensureTip();
   const acc=`var(${TIER[n.tierKey]})`;
   t.style.setProperty('--rt-accent',acc);
@@ -987,6 +1018,196 @@ function showWarnings(s){
     s.warnings.slice(0,2).map(esc).join('; ')+(s.warnings.length>2?` +${s.warnings.length-2} more`:'')+`</span>`+
     `<button class="warnx" title="dismiss" onclick="this.parentNode.remove();warnMuted=1">✕</button>`;
 }
+
+
+/* === system context overlay: start === */
+/* Second layer: what the run touched outside itself. Entities are laid out in
+   zone lanes under the agent graph; edges run agent -> entity. Implicit
+   dependencies (A wrote a file, B read it) are drawn on the agent graph itself,
+   because they are real dependencies the declared DAG does not contain. */
+const ZONES=['workspace','home','temp','system','loopback','lan','internet','service'];
+const ZLABEL={workspace:'workspace',home:'home',temp:'temp',system:'system',
+  loopback:'loopback',lan:'local network',internet:'internet',service:'service'};
+const EKIND={file:'▤',host:'⬢',command:'▸',query:'⌕',service:'⧉'};
+const ENT_LIMIT=42;
+let sysOn=false, ctxData=null, ctxRun=null, lastL=null, sysNoteMuted=0;
+
+document.getElementById('sysbtn').addEventListener('click',async()=>{
+  sysOn=!sysOn;
+  document.getElementById('sysbtn').classList.toggle('on',sysOn);
+  if(sysOn) await loadContext();
+  if(cur){ userMoved=false; render(cur); seedParticles(); }
+});
+
+async function loadContext(){
+  if(!cur) return;
+  if(ctxData && ctxRun===cur.run) return;
+  try{
+    const q='?run='+encodeURIComponent(cur.run)+(SESSQ?'&session='+encodeURIComponent(SESSQ):'');
+    ctxData=await (await fetch('/context'+q,{cache:'no-store'})).json();
+    ctxRun=cur.run;
+  }catch(e){ ctxData=null; }
+}
+
+function clearSystem(){
+  document.querySelectorAll('.ent,.lane').forEach(e=>e.remove());
+  document.querySelectorAll('#edgeG path.entedge,#edgeG path.implicit').forEach(e=>e.remove());
+  const n=document.getElementById('sysnote'); if(n) n.remove();
+}
+
+function renderSystem(L,state){
+  clearSystem();
+  if(!sysOn||!ctxData||ctxData.error||!ctxData.entities) return;
+  const all=ctxData.entities;
+  const shown=all.slice(0,ENT_LIMIT);
+  const byZone={};
+  shown.forEach(e=>(byZone[e.zone]=byZone[e.zone]||[]).push(e));
+
+  const top=L.H+70, COLW=248, ROWH=30;
+  let y=top; const pos={};
+  ZONES.filter(z=>byZone[z]).forEach(z=>{
+    const list=byZone[z];
+    const lane=document.createElement('div'); lane.className='lane';
+    lane.style.left='0px'; lane.style.top=y+'px'; lane.style.width=L.W+'px';
+    lane.innerHTML=`<div class="lname"><i style="background:var(--z-${z})"></i>${ZLABEL[z]||z}`
+      +` <span style="color:var(--dim)">${list.length}</span></div><div class="lrule"></div>`;
+    stage.appendChild(lane);
+    y+=26;
+    const perRow=Math.max(1,Math.floor(L.W/COLW));
+    list.forEach((e,i)=>{
+      const cx=(i%perRow)*COLW, cy=y+Math.floor(i/perRow)*ROWH;
+      pos[e.id]={x:cx,y:cy};
+      const el=document.createElement('div');
+      el.className='ent'; el.style.setProperty('--ez',`var(--z-${e.zone})`);
+      el.style.left=cx+'px'; el.style.top=cy+'px';
+      el.dataset.eid=e.id; el.tabIndex=0; el.setAttribute('role','button');
+      el.setAttribute('aria-label',`${e.kind} ${e.label}, ${e.opCount} operations`);
+      el.innerHTML=`<span class="edot"></span><span class="elabel" title="">${esc(EKIND[e.kind]||'')} ${esc(e.label)}</span>`
+        +`<span class="ecount">${e.opCount}</span>`;
+      el.addEventListener('mouseenter',()=>showEntTip(e,el));
+      el.addEventListener('focus',()=>showEntTip(e,el));
+      el.addEventListener('mouseleave',hideTip);
+      el.addEventListener('blur',hideTip);
+      el.addEventListener('click',ev=>{ev.stopPropagation(); if(!moved) openEntity(e);});
+      el.addEventListener('keydown',ev=>{if(ev.key==='Enter'||ev.key===' '){ev.preventDefault();openEntity(e);}});
+      stage.appendChild(el);
+    });
+    y+=Math.ceil(list.length/perRow)*ROWH+18;
+  });
+
+  // Agent -> entity edges are drawn on focus only. Drawing all of them at once
+  // is a hairball (355 on a real run) that hides the structure it should show.
+  entPos=pos; entShown=shown;
+  entLinks={agent:{},ent:{}};
+  (ctxData.edges||[]).forEach(ed=>{
+    if(!pos[ed.to]) return;
+    (entLinks.agent[ed.from]=entLinks.agent[ed.from]||new Set()).add(ed.to);
+    (entLinks.ent[ed.to]=entLinks.ent[ed.to]||new Set()).add(ed.from);
+  });
+
+  // implicit dependencies, drawn between the two AGENTS
+  (ctxData.findings||[]).filter(f=>f.kind==='implicit-dep'&&!f.declared).forEach(f=>{
+    const a=nodePos[f.from], b=nodePos[f.to]; if(!a||!b) return;
+    const p=document.createElementNS('http://www.w3.org/2000/svg','path');
+    p.setAttribute('d',edgePath(a,b)); p.setAttribute('class','implicit');
+    p.appendChild(document.createElementNS('http://www.w3.org/2000/svg','title'))
+     .textContent=`undeclared dependency via ${f.label}`;
+    edgeG.appendChild(p);
+  });
+
+  edgesSvg.setAttribute('height',Math.max(L.H,y+40));
+  // the band sits below the agent graph, so the view must be refitted to include it
+  L.H=Math.max(L.H,y+40);
+  if(!userMoved) fit(L);
+  showSysNote(all.length-shown.length);
+}
+
+function showSysNote(hidden){
+  const undeclared=(ctxData.findings||[]).filter(f=>f.kind==='implicit-dep'&&!f.declared).length;
+  const contention=(ctxData.findings||[]).filter(f=>f.kind==='write-contention').length;
+  const landing=(ctxData.findings||[]).filter(f=>f.kind==='external-landing').length;
+  const bits=[];
+  if(undeclared) bits.push(`<b>${undeclared} undeclared dependency</b> via files (orange dashed)`);
+  if(contention) bits.push(`<b>${contention} write contention</b>`);
+  if(landing) bits.push(`<b>${landing} external landing</b>`);
+  if(hidden>0) bits.push(`${hidden} more entities not shown (top ${ENT_LIMIT} by activity)`);
+  if(!bits.length||sysNoteMuted) return;
+  const n=document.createElement('div'); n.className='sysnote'; n.id='sysnote';
+  n.innerHTML=`<button class="sx" onclick="this.parentNode.remove();sysNoteMuted=1">✕</button>`+bits.join(' · ');
+  document.body.appendChild(n);
+}
+
+let entPos={}, entShown=[], entLinks={agent:{},ent:{}};
+
+function clearFocus(){
+  document.querySelectorAll('#edgeG path.entedge').forEach(e=>e.remove());
+  document.querySelectorAll('.ent.dim,.node.dim').forEach(e=>e.classList.remove('dim'));
+}
+
+function focusLinks(kind,id){
+  clearFocus();
+  const ents = kind==='agent' ? (entLinks.agent[id]||new Set())
+                              : new Set([id]);
+  const agents = kind==='agent' ? new Set([id]) : (entLinks.ent[id]||new Set());
+  if(!ents.size||!agents.size) return;
+  agents.forEach(a=>ents.forEach(en=>{
+    const A=nodePos[a], B=entPos[en]; if(!A||!B) return;
+    const ent=entShown.find(x=>x.id===en); if(!ent) return;
+    const p=document.createElementNS('http://www.w3.org/2000/svg','path');
+    p.setAttribute('d',`M${A.x+NW/2},${A.y+NODEH} C${A.x+NW/2},${A.y+NODEH+80} ${B.x+40},${B.y-70} ${B.x+40},${B.y+9}`);
+    p.setAttribute('class','entedge'); p.style.setProperty('--ez',`var(--z-${ent.zone})`);
+    p.setAttribute('opacity','.85'); p.setAttribute('stroke-width','1.6');
+    edgeG.appendChild(p);
+  }));
+  document.querySelectorAll('.ent').forEach(el=>el.classList.toggle('dim',!ents.has(el.dataset.eid)));
+  document.querySelectorAll('.node').forEach(el=>el.classList.toggle('dim',!agents.has(el.dataset.id)));
+}
+
+function showEntTip(e,el){
+  focusLinks('ent',e.id);
+  tipId='ent:'+e.id; const t=ensureTip();
+  const acc=`var(--z-${e.zone})`;
+  t.style.setProperty('--rt-accent',acc);
+  t.style.setProperty('--rt-glow',`color-mix(in srgb, ${acc} 32%, transparent)`);
+  const ops={}; (e.ops||[]).forEach(o=>ops[o.op]=(ops[o.op]||0)+1);
+  const opline=Object.entries(ops).map(([k,v])=>`${k} ×${v}`).join(' · ');
+  t.innerHTML=`<div class="rhead"><span class="rdot"></span><span class="rid">${esc(e.label)}</span>`
+    +`<span class="rchip">${esc(e.kind)}</span></div>`
+    +`<div class="rbody">`
+    +`<div class="rk">where</div><div class="quiet">${ZLABEL[e.zone]||e.zone}</div>`
+    +`<div class="rk">what happened</div><div class="quiet">${esc(opline)||'—'}</div>`
+    +`<div class="rk">touched by ${e.agents.length} agent${e.agents.length>1?'s':''}</div>`
+    +`<div class="quiet">${e.agents.slice(0,4).map(esc).join(', ')}${e.agents.length>4?` +${e.agents.length-4}`:''}</div>`
+    +`</div>`;
+  placeTip(el); t.classList.add('show');
+}
+
+function openEntity(e){
+  const d=document.getElementById('drawer'); d.classList.add('open');
+  selected=null; selAid=null;
+  document.querySelectorAll('.node.sel,.ent.sel').forEach(x=>x.classList.remove('sel'));
+  const el=[...document.querySelectorAll('.ent')].find(x=>x.dataset.eid===e.id);
+  if(el) el.classList.add('sel');
+  const acc=`var(--z-${e.zone})`;
+  const rel=(ctxData.findings||[]).filter(f=>f.entity===e.id);
+  d.innerHTML=`<div id="dmeta"><h3><span style="width:11px;height:11px;border-radius:3px;background:${acc}"></span>
+      ${esc(e.label)}<span class="close" onclick="closeDrawer()">✕</span></h3>
+    <div class="grid">
+      <div class="kv"><span class="k">kind</span><span class="val">${esc(e.kind)}</span></div>
+      <div class="kv"><span class="k">zone</span><span class="val">${esc(ZLABEL[e.zone]||e.zone)}</span></div>
+      <div class="kv"><span class="k">operations</span><span class="val">${e.opCount}</span></div>
+      <div class="kv"><span class="k">agents</span><span class="val">${e.agents.length}</span></div>
+    </div></div>
+    <div id="dbody">
+      ${rel.length?`<div class="block"><div class="k">relationships</div>`+
+        rel.map(f=>`<div class="edgepay" style="margin-bottom:6px">${esc(f.detail)}</div>`).join('')+`</div>`:''}
+      <div class="block"><div class="k">operations</div><div class="tl">`+
+      (e.ops||[]).slice(0,24).map(o=>`<div class="ev k-tool_use"><span class="evdot"></span>
+        <div class="evhead"><span class="evkind">${esc(o.op)}</span><b>${esc(o.agent)}</b>
+        <span class="evt">${esc(o.tool)}</span></div></div>`).join('')+
+      `</div></div></div>`;
+}
+/* === system context overlay: end === */
 
 /* ---------- data loop ---------- */
 const SESSQ=new URLSearchParams(location.search).get('session');

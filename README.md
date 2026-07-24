@@ -118,6 +118,40 @@ single node showing the step count and summed totals. Click it to list the
 members. The largest run tested here is 155 nodes across 126 columns, which is a
 40,000 pixel canvas uncontracted.
 
+## System context
+
+The workflow DAG stops at the process boundary. The SYSTEM button extends it
+into what the run actually touched: files, hosts, commands, search queries and
+MCP services, each placed in a zone by how far out it sits.
+
+![system context](docs/system.png)
+
+| zone | meaning |
+|---|---|
+| workspace, home | paths under the working directory or your home |
+| system, temp | everything else on the machine |
+| loopback, local network | 127.0.0.1, private ranges, `.local` |
+| internet | public hosts |
+| service | MCP servers |
+
+Entities are laid out in lanes and connect to agents on focus rather than all at
+once, because drawing every link is a hairball (355 on one real run). Hover an
+entity to see which agents touched it and how; hover an agent to see what it
+reached. Click either for the full operation list.
+
+Three relationships are derived, and each needs two recorded operations to
+exist:
+
+- **Undeclared dependency.** Agent A writes a file, agent B later reads it. That
+  is a real dependency, and if the declared graph does not contain it the edge is
+  drawn in orange. This is the most common way a workflow is wrong invisibly.
+- **Write contention.** Two agents writing the same path.
+- **External landing.** An agent fetched from the internet and wrote to disk in
+  the same run, so remote content reached the filesystem.
+
+Everything comes from a recorded tool call. Nothing is inferred from
+reachability alone.
+
 ## Terminal panel
 
 ![terminal mirror](docs/terminal.png)
@@ -134,6 +168,7 @@ to tmux. For those the panel shows a read-only feed of the session transcript.
 |---|---|
 | `wfviz.py` | server: reads run files, builds the graph, serves `/state`, `/agent`, `/runs`, `/compare` |
 | `dashboard.html` | the graph UI |
+| `context.py` | system-context layer: entities, zones, derived relationships |
 | `viz-preamble.js` | `vnode` and `vnodeFrom` authoring helpers |
 | `gen_replay.py` | bakes a finished run into a standalone HTML replay |
 | `demo/demo-workflow.js` | example workflow where every edge carries data |
