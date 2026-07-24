@@ -3,7 +3,10 @@
 A live graph view of Claude Code dynamic workflows. Each node is one subagent.
 Each edge is data passed from one agent's output into another's prompt.
 
-https://github.com/user-attachments/assets/DEMO_PLACEHOLDER
+<video src="https://github.com/trwilcoxson/graph-claude/raw/main/docs/demo.mp4"
+       poster="docs/demo-poster.png" controls muted autoplay loop playsinline width="100%"></video>
+
+[Watch the demo](docs/demo.mp4) — one workflow from launch to finish, then every feature.
 
 ![the graph](docs/graph.png)
 
@@ -116,6 +119,8 @@ members. The largest run tested here is 155 nodes across 126 columns, which is a
 40,000 pixel canvas uncontracted.
 
 ## Terminal panel
+
+![terminal mirror](docs/terminal.png)
 
 `./wfviz-term` opens the graph with a terminal panel attached to a tmux session,
 so you can drive Claude Code from the same window as the graph. Start sessions

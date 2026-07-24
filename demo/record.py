@@ -13,6 +13,13 @@ import os, subprocess, sys, time
 TMUX = os.environ.get('WFVIZ_DEMO_TMUX', 'gcdemo')
 
 
+def tpin():
+    """Pin the mirrored window size; if tmux follows the small browser client it
+    reflows and the pane renders empty."""
+    subprocess.run(["tmux","set","-g","window-size","manual"],capture_output=True)
+    subprocess.run(["tmux","resize-window","-t",TMUX,"-x","78","-y","27"],capture_output=True)
+
+
 def tsend(keys, enter=True):
     """Type into the mirrored tmux session so the video shows it arrive live."""
     cmd = ['tmux', 'send-keys', '-t', TMUX, keys] + (['Enter'] if enter else [])
@@ -58,11 +65,15 @@ def main():
     if tport:
         url += f"&termport={tport}&tmux=gcdemo&tmuxcwd=~%2Fgraph-claude"
 
+    tpin()
+    for c in ("clear", "ls", "git log --oneline -3"):
+        tsend(c)
+        time.sleep(0.8)
+
     with sync_playwright() as p:
         browser = p.chromium.launch(args=["--force-color-profile=srgb", "--font-render-hinting=none"])
         ctx = browser.new_context(
             viewport={"width": W, "height": H},
-            device_scale_factor=2,                       # retina capture
             record_video_dir=os.path.join(OUT, "_vid"),
             record_video_size={"width": W, "height": H},
         )
@@ -116,7 +127,16 @@ def main():
         page.wait_for_timeout(800)
 
         # Critical path
+        caption(page, "controls say what they are for", "hover any button or stat")
+        page.hover("#critbtn")
+        page.wait_for_timeout(3000)
+        page.hover(".stats .tile:last-child")
+        page.wait_for_timeout(2800)
+        caption(page, "")
+        page.wait_for_timeout(600)
+
         caption(page, "critical path", "the chain that set the run time; everything dimmed has slack")
+        page.hover("#critbtn")
         page.click("#critbtn")
         page.wait_for_timeout(4200)
         page.click("#critbtn")
@@ -142,14 +162,10 @@ def main():
         # Terminal mirror
         caption(page, "the terminal is a live mirror",
                 "attached to your tmux Claude session; typing here types there")
-        tsend("clear")
         page.click("#termtoggle")
-        page.wait_for_timeout(2600)
-        # type into the tmux session while the panel is open: proof it is a mirror
-        tsend("./wfviz")
-        page.wait_for_timeout(2600)
-        tsend("git log --oneline -3")
-        page.wait_for_timeout(3400)
+        page.wait_for_timeout(3500)          # ttyd websocket connect
+        subprocess.run(["tmux", "refresh-client", "-t", TMUX], capture_output=True)
+        page.wait_for_timeout(5500)
         page.click("#termtoggle")
         caption(page, "")
         page.wait_for_timeout(1400)
@@ -160,11 +176,9 @@ def main():
         ctx.close()
         browser.close()
 
-    raw = None
     vd = os.path.join(OUT, "_vid")
-    for f in sorted(os.listdir(vd)):
-        if f.endswith(".webm"):
-            raw = os.path.join(vd, f)
+    webms = [os.path.join(vd, f) for f in os.listdir(vd) if f.endswith(".webm")]
+    raw = max(webms, key=os.path.getmtime) if webms else None
     if not raw:
         sys.exit("no video captured")
 
