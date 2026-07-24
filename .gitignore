@@ -1,0 +1,21 @@
+# Generated output — rebuilt by gen_replay.py / demo/capture.sh.
+# artifact.html embeds real run transcripts, which include local paths.
+artifact.html
+demo/frames/
+demo/*.mp4
+demo/*.gif
+# docs/demo.mp4 and docs/demo.gif are shipped on purpose
+
+# Local runtime state
+.wfviz/
+*.log
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Python
+__pycache__/
+*.py[cod]

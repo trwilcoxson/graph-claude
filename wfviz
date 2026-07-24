@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# wfviz — start the living workflow dashboard and open it.
+# Idempotent: if a server is already up on the port, just opens the browser.
+set -euo pipefail
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PORT="${WFVIZ_PORT:-8777}"
+if ! curl -s "http://127.0.0.1:${PORT}/list" >/dev/null 2>&1; then
+  (python3 "$DIR/wfviz.py" --port "$PORT" >/tmp/wfviz.log 2>&1 &)
+  sleep 1
+fi
+echo "wfviz → http://127.0.0.1:${PORT}"
+open "http://127.0.0.1:${PORT}" 2>/dev/null || true

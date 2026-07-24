@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# wfviz-term — open the graph with a live mirror of THE SESSION THAT LAUNCHED IT.
+#
+# Run from a Claude Code session that lives in tmux (see ./ccm) and the browser
+# terminal attaches to *that* tmux session, on its own port, with the graph
+# scoped to that session's workflow runs. Several Claude sessions can each have
+# their own mirror open at once.
+#
+# Also usable as a PreToolUse hook on the Workflow tool: it reads the hook's
+# JSON payload on stdin to learn the launching Claude session id.
+set -uo pipefail
+DPORT="${WFVIZ_PORT:-8777}"
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# ── 1. who launched us? ───────────────────────────────────────────────────
+# Claude session id (for scoping the graph) comes from the hook payload on stdin.
+CSESSION=""
+if [ ! -t 0 ]; then
+  PAYLOAD="$(cat 2>/dev/null || true)"
+  CSESSION="$(printf '%s' "$PAYLOAD" | python3 -c 'import sys,json
+try: print(json.load(sys.stdin).get("session_id","") or "")
+except Exception: print("")' 2>/dev/null)"
+fi
+
+# tmux session to mirror: the one we are actually running inside. If we're NOT in
+# tmux this session cannot be mirrored as a terminal — never fall back to some
+# other session's terminal (that just shows you the wrong session). Fall back to
+# a read-only live feed of THIS session's own transcript instead.
+SESS=""
+if [ -n "${TMUX:-}" ]; then
+  SESS="$(tmux display-message -p '#S' 2>/dev/null)"
+elif [ -n "${WFVIZ_TMUX:-}" ]; then
+  SESS="$WFVIZ_TMUX"
+fi
+
+# ── 2. dashboard server ───────────────────────────────────────────────────
+if ! curl -s "http://127.0.0.1:${DPORT}/runs" >/dev/null 2>&1; then
+  (python3 "$DIR/wfviz.py" --port "$DPORT" >/tmp/wfviz.log 2>&1 &); sleep 1
+fi
+
+# ── 3. a ttyd dedicated to THIS tmux session (reuse if already serving) ───
+# session -> port registry. (Can't discover this from `ps`: macOS truncates argv
+# even with -ww, hiding the trailing "tmux attach -t <session>", which would make
+# every re-run spawn a duplicate ttyd.)
+REG="$HOME/.wfviz"; mkdir -p "$REG"
+REGFILE="$REG/port-$(printf '%s' "$SESS" | tr -c 'a-zA-Z0-9_-' '_')"
+port_listening() { lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1; }
+ttyd_port_for() {                       # reuse this session's ttyd if still alive
+  local p; p="$(cat "$REGFILE" 2>/dev/null)"
+  if [ -n "$p" ] && port_listening "$p"; then echo "$p"; else rm -f "$REGFILE"; fi
+}
+free_port() {
+  local p="${1:-7681}"
+  while lsof -nP -iTCP:"$p" -sTCP:LISTEN >/dev/null 2>&1; do p=$((p+1)); done
+  echo "$p"
+}
+
+TPORT=""
+if [ -z "$SESS" ]; then
+  # not tmux-hosted: open the graph + a live read-only feed of this session
+  URL="http://127.0.0.1:${DPORT}/?term=1"
+  [ -n "$CSESSION" ] && URL="${URL}&session=${CSESSION}"
+  echo "this session isn't tmux-hosted — showing a read-only live feed."
+  echo "start sessions with $DIR/ccm for a controllable mirror."
+  echo "→ $URL"
+  open "$URL" 2>/dev/null || true
+  exit 0
+fi
+
+TPORT="$(ttyd_port_for "$SESS")"
+if [ -z "$TPORT" ]; then
+  # NEVER auto-start Claude Code. Doing so silently created a second session in
+  # another directory that looked like the one being watched. Sessions are only
+  # ever created deliberately, by you, via ./ccm.
+  if ! tmux has-session -t "$SESS" 2>/dev/null; then
+    echo "no tmux session '$SESS' — start one yourself with: $DIR/ccm $SESS"
+    exit 1
+  fi
+  tmux set -g window-size latest 2>/dev/null || true
+  tmux set -g focus-events on 2>/dev/null || true
+  tmux set -g status-style "bg=default,fg=#8b90a8" 2>/dev/null || true
+  tmux set -g status-left  "#[fg=#ff9d73,bold] claude #[fg=#565b78]" 2>/dev/null || true
+  tmux set -g status-right "#[fg=#565b78]%H:%M " 2>/dev/null || true
+  tmux set -g window-status-current-style "fg=#ff9d73,bold" 2>/dev/null || true
+  tmux set -g window-status-style "fg=#565b78" 2>/dev/null || true
+
+  TPORT="$(free_port 7681)"
+  echo "$TPORT" > "$REGFILE"
+  ( ttyd -W -p "$TPORT" \
+      -t fontSize=13 -t 'fontFamily=ui-monospace, SF Mono, Menlo, monospace' \
+      -t allowTransparency=true \
+      -t 'theme={"background":"rgba(10,12,23,0)","foreground":"#eef0fb","cursor":"#ff9d73","cursorAccent":"#0a0c17","selectionBackground":"#39335c"}' \
+      tmux attach -t "$SESS" >"/tmp/wfviz-ttyd-${SESS}.log" 2>&1 & )
+  sleep 3   # ttyd needs ~3s to bind before the browser can load it
+fi
+
+# ── 4. open the view for this session ────────────────────────────────────
+TCWD="$(tmux display-message -p -t "$SESS" '#{pane_current_path}' 2>/dev/null | sed "s|$HOME|~|")"
+URL="http://127.0.0.1:${DPORT}/?term=1&termport=${TPORT}&tmux=$(printf '%s' "$SESS" | sed 's/ /%20/g')"
+[ -n "$TCWD" ] && URL="${URL}&tmuxcwd=$(printf '%s' "$TCWD" | sed 's|/|%2F|g;s/ /%20/g;s/~/%7E/g')"
+[ -n "$CSESSION" ] && URL="${URL}&session=${CSESSION}"
+echo "mirroring tmux '${SESS}' (${TCWD:-?}) on :${TPORT} → $URL"
+open "$URL" 2>/dev/null || true

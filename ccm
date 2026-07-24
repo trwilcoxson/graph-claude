@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# ccm — launch a Claude Code session inside its OWN tmux session so the wfviz
+# browser terminal mirrors exactly this session. Re-run to re-attach.
+#   ccm            → session named after the current directory
+#   ccm mywork     → session named "mywork"
+set -uo pipefail
+if [ -n "${TMUX:-}" ]; then exec claude "$@"; fi          # already mirrored
+NAME="${1:-cc-$(basename "$PWD" | tr -c 'a-zA-Z0-9_-' '-' | sed 's/-*$//')}"
+[ $# -gt 0 ] && shift
+if tmux has-session -t "$NAME" 2>/dev/null; then
+  exec tmux attach -t "$NAME"
+fi
+exec tmux new-session -s "$NAME" "claude $*"
