@@ -261,16 +261,26 @@
   .lane .lname i{width:7px;height:7px;border-radius:2px;display:inline-block}
   .lane .lrule{height:1px;background:linear-gradient(90deg,var(--line),transparent);margin-top:5px}
   .ent{position:absolute;display:flex;align-items:center;gap:6px;max-width:230px;cursor:pointer;
-    padding:5px 9px;border-radius:8px;font-size:11px;color:#cfd3e8;
-    background:linear-gradient(180deg,rgba(24,28,52,.9),rgba(15,18,38,.9));
-    border:1px solid var(--line);transition:border-color .2s,transform .2s,box-shadow .2s}
+    padding:4px 8px;border-radius:7px;font-size:10.5px;color:#cfd3e8;
+    background:linear-gradient(180deg,rgba(24,28,52,.92),rgba(15,18,38,.92));
+    border:1px solid var(--line);transition:border-color .2s,transform .2s,box-shadow .2s,opacity .18s}
+  /* an object only this agent touched: sits on the agent, so it needs no edge */
+  .ent.solo{padding:3px 7px;font-size:10px;border-color:rgba(255,255,255,.07);
+    background:linear-gradient(180deg,rgba(20,24,45,.86),rgba(13,16,33,.86))}
+  .ent.solo .ecount{opacity:.6}
+  .ent.shared{border-color:color-mix(in srgb,var(--ez) 32%,transparent)}
+  .ent .everb{flex:none;font-size:8.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--ez);opacity:.9}
+  .entmore{position:absolute;font-size:9px;letter-spacing:.08em;color:var(--dim);cursor:default;
+    padding:2px 7px;border-radius:6px;border:1px dashed var(--line)}
   .ent:hover{transform:translateY(-1px);border-color:var(--ez);box-shadow:0 6px 20px rgba(0,0,0,.45)}
   .ent.sel{border-color:var(--ez);box-shadow:0 0 0 1px var(--ez)}
   .ent .edot{width:7px;height:7px;border-radius:2px;flex:none;background:var(--ez)}
-  .ent .elabel{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:rtl;text-align:left}
+  .ent .elabel{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .ent .ecount{flex:none;font-size:9px;color:var(--dim);font-variant-numeric:tabular-nums}
   .ent:focus-visible{outline:2px solid var(--sonnet);outline-offset:2px}
-  #edgeG path.entedge{stroke:var(--ez,#4a5480);stroke-width:1;opacity:.3;fill:none}
+  #edgeG path.entedge{stroke:var(--ez,#4a5480);stroke-width:1.1;opacity:.22;fill:none;
+    stroke-linecap:round;transition:opacity .18s,stroke-width .18s}
+  #edgeG path.entedge.lit{opacity:.95;stroke-width:2}
   .ent.dim{opacity:.2} .node.dim{opacity:.3;filter:saturate(.5)}
   .ent,.node{transition:opacity .18s}
   #edgeG path.implicit{stroke:#ff9d73;stroke-width:2;stroke-dasharray:6 5;opacity:.9;fill:none}
@@ -1030,7 +1040,7 @@ const ZLABEL={workspace:'workspace',home:'home',temp:'temp',system:'system',
   loopback:'loopback',lan:'local network',internet:'internet',service:'service'};
 const EKIND={file:'▤',host:'⬢',command:'▸',query:'⌕',service:'⧉'};
 const ENT_LIMIT=42;
-let sysOn=false, ctxData=null, ctxRun=null, lastL=null, sysNoteMuted=0;
+let sysOn=false, ctxData=null, ctxRun=null, lastL=null, sysNoteMuted=0, ctxAt=0;
 
 document.getElementById('sysbtn').addEventListener('click',async()=>{
   sysOn=!sysOn;
@@ -1059,67 +1069,125 @@ function renderSystem(L,state){
   clearSystem();
   if(!sysOn||!ctxData||ctxData.error||!ctxData.entities) return;
   const all=ctxData.entities;
-  const shown=all.slice(0,ENT_LIMIT);
-  const byZone={};
-  shown.forEach(e=>(byZone[e.zone]=byZone[e.zone]||[]).push(e));
 
-  const top=L.H+70, COLW=248, ROWH=30;
-  let y=top; const pos={};
-  ZONES.filter(z=>byZone[z]).forEach(z=>{
-    const list=byZone[z];
-    const lane=document.createElement('div'); lane.className='lane';
-    lane.style.left='0px'; lane.style.top=y+'px'; lane.style.width=L.W+'px';
-    lane.innerHTML=`<div class="lname"><i style="background:var(--z-${z})"></i>${ZLABEL[z]||z}`
-      +` <span style="color:var(--dim)">${list.length}</span></div><div class="lrule"></div>`;
-    stage.appendChild(lane);
-    y+=26;
-    const perRow=Math.max(1,Math.floor(L.W/COLW));
-    list.forEach((e,i)=>{
-      const cx=(i%perRow)*COLW, cy=y+Math.floor(i/perRow)*ROWH;
-      pos[e.id]={x:cx,y:cy};
-      const el=document.createElement('div');
-      el.className='ent'; el.style.setProperty('--ez',`var(--z-${e.zone})`);
-      el.style.left=cx+'px'; el.style.top=cy+'px';
-      el.dataset.eid=e.id; el.tabIndex=0; el.setAttribute('role','button');
-      el.setAttribute('aria-label',`${e.kind} ${e.label}, ${e.opCount} operations`);
-      el.innerHTML=`<span class="edot"></span><span class="elabel" title="">${esc(EKIND[e.kind]||'')} ${esc(e.label)}</span>`
-        +`<span class="ecount">${e.opCount}</span>`;
-      el.addEventListener('mouseenter',()=>showEntTip(e,el));
-      el.addEventListener('focus',()=>showEntTip(e,el));
-      el.addEventListener('mouseleave',hideTip);
-      el.addEventListener('blur',hideTip);
-      el.addEventListener('click',ev=>{ev.stopPropagation(); if(!moved) openEntity(e);});
-      el.addEventListener('keydown',ev=>{if(ev.key==='Enter'||ev.key===' '){ev.preventDefault();openEntity(e);}});
+  // Who touched what. An entity touched by one agent belongs to that agent and
+  // is drawn ON it — no edge needed. Only shared entities get routed edges,
+  // which is what keeps the picture clean: coupling is the thing worth drawing.
+  const owner={}, shared=[];
+  all.forEach(e=>{
+    if(e.agents.length===1) (owner[e.agents[0]]=owner[e.agents[0]]||[]).push(e);
+    else if(e.agents.length>1) shared.push(e);
+  });
+
+  // ---- per-agent object chips, stacked under their agent -------------------
+  const SOLO_MAX=4;
+  Object.entries(owner).forEach(([aid,list])=>{
+    const p=nodePos[aid]; if(!p) return;
+    list.sort((a,b)=>b.opCount-a.opCount);
+    list.slice(0,SOLO_MAX).forEach((e,i)=>{
+      const el=mkEnt(e,'solo');
+      el.style.left=(p.x+10)+'px';
+      el.style.top=(p.y+NODEH+6+i*24)+'px';
+      el.style.maxWidth=(NW-20)+'px';
       stage.appendChild(el);
     });
-    y+=Math.ceil(list.length/perRow)*ROWH+18;
+    if(list.length>SOLO_MAX){
+      const more=document.createElement('div');
+      more.className='entmore';
+      more.style.left=(p.x+10)+'px';
+      more.style.top=(p.y+NODEH+6+SOLO_MAX*24)+'px';
+      more.textContent=`+${list.length-SOLO_MAX} more`;
+      more.title=list.slice(SOLO_MAX).map(x=>x.label).join('\n');
+      stage.appendChild(more);
+    }
   });
 
-  // Agent -> entity edges are drawn on focus only. Drawing all of them at once
-  // is a hairball (355 on a real run) that hides the structure it should show.
-  entPos=pos; entShown=shown;
-  entLinks={agent:{},ent:{}};
-  (ctxData.edges||[]).forEach(ed=>{
-    if(!pos[ed.to]) return;
-    (entLinks.agent[ed.from]=entLinks.agent[ed.from]||new Set()).add(ed.to);
-    (entLinks.ent[ed.to]=entLinks.ent[ed.to]||new Set()).add(ed.from);
+  // ---- shared objects: one lane, short clean links -------------------------
+  entPos={}; entShown=all;
+  // sit the lane just below the lowest agent + its attached chips
+  let deepest=0;
+  Object.entries(owner).forEach(([aid,list])=>{
+    const p=nodePos[aid]; if(!p) return;
+    deepest=Math.max(deepest,p.y+NODEH+6+Math.min(list.length,SOLO_MAX+1)*24);
   });
+  Object.values(nodePos).forEach(p=>deepest=Math.max(deepest,p.y+NODEH));
+  let laneTop=deepest+52;
+  if(shared.length){
+    shared.sort((a,b)=>b.agents.length-a.agents.length||b.opCount-a.opCount);
+    const show=shared.slice(0,18);
+    const lane=document.createElement('div'); lane.className='lane';
+    lane.style.left='0px'; lane.style.top=laneTop+'px'; lane.style.width=L.W+'px';
+    lane.innerHTML=`<div class="lname"><i style="background:var(--z-home)"></i>shared objects`
+      +` <span style="color:var(--dim)">touched by more than one agent</span></div><div class="lrule"></div>`;
+    stage.appendChild(lane);
+    const y0=laneTop+30, COLW=Math.max(190,Math.floor(L.W/Math.min(show.length||1,5))), ROWH=30;
+    const perRow=Math.max(1,Math.floor(L.W/COLW));
+    show.forEach((e,i)=>{
+      const cx=(i%perRow)*COLW, cy=y0+Math.floor(i/perRow)*ROWH;
+      entPos[e.id]={x:cx,y:cy};
+      const el=mkEnt(e,'shared');
+      el.style.left=cx+'px'; el.style.top=cy+'px';
+      stage.appendChild(el);
+    });
+    laneTop=y0+Math.ceil(show.length/perRow)*ROWH+16;
 
-  // implicit dependencies, drawn between the two AGENTS
+    // one link per (agent, shared entity): few, short, and meaningful
+    show.forEach(e=>{
+      const b=entPos[e.id];
+      e.agents.forEach(a=>{
+        const A=nodePos[a]; if(!A) return;
+        const x1=A.x+NW/2, y1=A.y+NODEH, x2=b.x+40, y2=b.y;
+        const mid=(y1+y2)/2;
+        const p=document.createElementNS('http://www.w3.org/2000/svg','path');
+        p.setAttribute('d',`M${x1},${y1} C${x1},${mid} ${x2},${mid} ${x2},${y2}`);
+        p.setAttribute('class','entedge'); p.style.setProperty('--ez',`var(--z-${e.zone})`);
+        p.dataset.a=a; p.dataset.e=e.id;
+        edgeG.appendChild(p);
+      });
+    });
+  }
+
+  // ---- undeclared dependencies, on the agent graph itself ------------------
   (ctxData.findings||[]).filter(f=>f.kind==='implicit-dep'&&!f.declared).forEach(f=>{
     const a=nodePos[f.from], b=nodePos[f.to]; if(!a||!b) return;
     const p=document.createElementNS('http://www.w3.org/2000/svg','path');
     p.setAttribute('d',edgePath(a,b)); p.setAttribute('class','implicit');
-    p.appendChild(document.createElementNS('http://www.w3.org/2000/svg','title'))
-     .textContent=`undeclared dependency via ${f.label}`;
+    const t=document.createElementNS('http://www.w3.org/2000/svg','title');
+    t.textContent=`undeclared dependency via ${f.label}`;
+    p.appendChild(t);
     edgeG.appendChild(p);
   });
 
-  edgesSvg.setAttribute('height',Math.max(L.H,y+40));
-  // the band sits below the agent graph, so the view must be refitted to include it
-  L.H=Math.max(L.H,y+40);
+  edgesSvg.setAttribute('height',Math.max(L.H,laneTop+40));
+  L.H=Math.max(L.H,laneTop+40);
   if(!userMoved) fit(L);
-  showSysNote(all.length-shown.length);
+  showSysNote(Math.max(0,shared.length-18));
+}
+
+// Keep the tail of a path, which is the part that identifies it.
+function shortLabel(l){
+  if(l.length<=30||!l.includes('/')) return l;
+  const parts=l.split('/');
+  return '…/'+parts.slice(-2).join('/');
+}
+
+function mkEnt(e,mode){
+  const el=document.createElement('div');
+  el.className='ent '+mode; el.style.setProperty('--ez',`var(--z-${e.zone})`);
+  el.dataset.eid=e.id; el.tabIndex=0; el.setAttribute('role','button');
+  el.setAttribute('aria-label',`${e.kind} ${e.label}, ${e.opCount} operations`);
+  const ops={}; (e.ops||[]).forEach(o=>ops[o.op]=(ops[o.op]||0)+1);
+  const verb=Object.keys(ops).sort((a,b)=>ops[b]-ops[a])[0]||'';
+  el.innerHTML=`<span class="edot"></span><span class="everb">${esc(verb)}</span>`
+    +`<span class="elabel" title="${esc(e.label)}">${esc(EKIND[e.kind]||'')} ${esc(shortLabel(e.label))}</span>`
+    +(mode==='shared'?`<span class="ecount">${e.agents.length}★</span>`:`<span class="ecount">${e.opCount}</span>`);
+  el.addEventListener('mouseenter',()=>showEntTip(e,el));
+  el.addEventListener('focus',()=>showEntTip(e,el));
+  el.addEventListener('mouseleave',hideTip);
+  el.addEventListener('blur',hideTip);
+  el.addEventListener('click',ev=>{ev.stopPropagation(); if(!moved) openEntity(e);});
+  el.addEventListener('keydown',ev=>{if(ev.key==='Enter'||ev.key===' '){ev.preventDefault();openEntity(e);}});
+  return el;
 }
 
 function showSysNote(hidden){
@@ -1140,26 +1208,23 @@ function showSysNote(hidden){
 let entPos={}, entShown=[], entLinks={agent:{},ent:{}};
 
 function clearFocus(){
-  document.querySelectorAll('#edgeG path.entedge').forEach(e=>e.remove());
+  document.querySelectorAll('#edgeG path.entedge.lit').forEach(e=>e.classList.remove('lit'));
   document.querySelectorAll('.ent.dim,.node.dim').forEach(e=>e.classList.remove('dim'));
 }
 
 function focusLinks(kind,id){
   clearFocus();
-  const ents = kind==='agent' ? (entLinks.agent[id]||new Set())
-                              : new Set([id]);
-  const agents = kind==='agent' ? new Set([id]) : (entLinks.ent[id]||new Set());
-  if(!ents.size||!agents.size) return;
-  agents.forEach(a=>ents.forEach(en=>{
-    const A=nodePos[a], B=entPos[en]; if(!A||!B) return;
-    const ent=entShown.find(x=>x.id===en); if(!ent) return;
-    const p=document.createElementNS('http://www.w3.org/2000/svg','path');
-    p.setAttribute('d',`M${A.x+NW/2},${A.y+NODEH} C${A.x+NW/2},${A.y+NODEH+80} ${B.x+40},${B.y-70} ${B.x+40},${B.y+9}`);
-    p.setAttribute('class','entedge'); p.style.setProperty('--ez',`var(--z-${ent.zone})`);
-    p.setAttribute('opacity','.85'); p.setAttribute('stroke-width','1.6');
-    edgeG.appendChild(p);
-  }));
-  document.querySelectorAll('.ent').forEach(el=>el.classList.toggle('dim',!ents.has(el.dataset.eid)));
+  const ent=entShown.find(x=>x.id===id);
+  const agents = kind==='agent' ? new Set([id]) : new Set((ent&&ent.agents)||[]);
+  document.querySelectorAll('#edgeG path.entedge').forEach(p=>{
+    const hit = kind==='agent' ? p.dataset.a===id : p.dataset.e===id;
+    p.classList.toggle('lit',hit);
+  });
+  document.querySelectorAll('.ent').forEach(el=>{
+    const e2=entShown.find(x=>x.id===el.dataset.eid);
+    const rel = kind==='agent' ? (e2&&e2.agents.includes(id)) : el.dataset.eid===id;
+    el.classList.toggle('dim',!rel);
+  });
   document.querySelectorAll('.node').forEach(el=>el.classList.toggle('dim',!agents.has(el.dataset.id)));
 }
 
@@ -1217,7 +1282,11 @@ async function tick(){
     const qs = pinnedRun ? ('?run='+encodeURIComponent(pinnedRun)+(SESSQ?'&session='+encodeURIComponent(SESSQ):'')) : Q;
     const r=await fetch('/state'+qs,{cache:'no-store'}); const s=await r.json();
     if(s&&s.empty){document.getElementById('empty').style.display='grid';}
-    else if(s&&!s.error){ if(changed(s)){render(s);seedParticles();} showWarnings(s); }
+    else if(s&&!s.error){
+      if(changed(s)){render(s);seedParticles();}
+      showWarnings(s);
+      if(sysOn && s.status==='running' && Date.now()-ctxAt>4000){ ctxAt=Date.now(); ctxRun=null; loadContext().then(()=>cur&&render(cur)); }
+    }
     loadRuns();
   }catch(e){}
 }
